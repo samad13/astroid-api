@@ -144,9 +144,10 @@ are rejected:
 | `RATE_LIMIT_WINDOW_SECONDS` | `60` | Sliding-window size for the Redis rate-limiter guard. |
 | `RATE_LIMIT_MAX_REQUESTS` | `120` | Requests allowed per client per sliding window. |
 | `PUBLIC_RATE_LIMIT_ENABLED` | `true` | Enables the IP-based limiter for unauthenticated (`@Public()`) routes. |
-| `PUBLIC_RATE_LIMIT_MAX_REQUESTS` | `60` | Requests allowed per client IP per sliding window on public routes. |
+| `PUBLIC_RATE_LIMIT_MAX_REQUESTS` | `60` | Requests allowed per client per sliding window on public routes. Per-route overrides use the `@PublicRateLimit(max, windowSeconds)` decorator. |
 | `PUBLIC_RATE_LIMIT_WINDOW_SECONDS` | `60` | Sliding-window size for the public-route rate limiter. |
 | `PUBLIC_RATE_LIMIT_TRUST_PROXY` | `false` | Reads client IP from `X-Forwarded-For`. Only enable behind a trusted reverse proxy. |
+| `PUBLIC_RATE_LIMIT_CLIENT_IDENTIFIERS` | _(empty)_ | Comma-separated extra client identifiers folded into the public rate-limit bucket. `apiKey` tracks holders of an `x-api-key` (or `ApiKey`/`Bearer ak_…` Authorization header) separately from their shared IP. Optional and unvalidated (read via `process.env`). |
 
 ### Metrics
 

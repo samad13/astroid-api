@@ -9,8 +9,9 @@ import { SKIP_PUBLIC_RATE_LIMIT_KEY } from '../decorators/skip-public-rate-limit
 import { DomainException } from '../exceptions/domain.exception';
 import { ErrorCode } from '../constants/error-codes';
 import { PublicRateLimitConfig } from '../../config/rate-limit.config';
+import { PUBLIC_RATE_LIMIT_RULE_KEY } from '../decorators/public-rate-limit.decorator';
 
-type Metadata = { public?: boolean; skip?: boolean };
+type Metadata = { public?: boolean; skip?: boolean; rule?: { max: number; windowSeconds: number } };
 
 function buildContext(
   request: { path?: string; ip?: string; headers?: Record<string, string | string[]> },
@@ -22,6 +23,8 @@ function buildContext(
   class TestController {}
   if (metadata.public) Reflect.defineMetadata(IS_PUBLIC_KEY, true, handler);
   if (metadata.skip) Reflect.defineMetadata(SKIP_PUBLIC_RATE_LIMIT_KEY, true, handler);
+  if (metadata.rule)
+    Reflect.defineMetadata(PUBLIC_RATE_LIMIT_RULE_KEY, metadata.rule, handler);
 
   const context = {
     getType: () => 'http',
@@ -44,6 +47,7 @@ function buildGuard(
     maxRequests: 3,
     windowSeconds: 60,
     trustProxy: false,
+    clientIdentifiers: [],
     ...overrides,
   };
   const config = {
@@ -199,6 +203,99 @@ describe('PublicRateLimitGuard', () => {
 
       await expect(guard.canActivate(forwarded('10.0.0.2, 172.16.0.1'))).resolves.toBe(true);
       await expectRateLimited(guard.canActivate(forwarded('10.0.0.1, 172.16.0.9')));
+    });
+  });
+
+  describe('per-route rules', () => {
+    it('applies the @PublicRateLimit() override instead of the global limit', async () => {
+      const guard = buildGuard({ maxRequests: 1 });
+      const { context, headers } = buildContext(
+        {},
+        { public: true, rule: { max: 2, windowSeconds: 30 } },
+      );
+
+      await guard.canActivate(context);
+      await guard.canActivate(context);
+      const limited = await expectRateLimited(guard.canActivate(context));
+
+      expect(headers['X-RateLimit-Limit']).toBe(2);
+      expect(limited.details).toMatchObject({ limit: 2, windowSeconds: 30 });
+    });
+
+    it('keeps the global default when no route override is present', async () => {
+      const guard = buildGuard({ maxRequests: 2 });
+      const { context, headers } = buildContext({}, { public: true });
+
+      await guard.canActivate(context);
+
+      expect(headers['X-RateLimit-Limit']).toBe(2);
+    });
+
+    it('honours controller-level overrides over handler rules', async () => {
+      const guard = buildGuard({ maxRequests: 5 });
+      // The handler rule must win (getAllAndOverride walks handler first).
+      const { context, headers } = buildContext(
+        {},
+        { public: true, rule: { max: 4, windowSeconds: 15 } },
+      );
+
+      await guard.canActivate(context);
+
+      expect(headers['X-RateLimit-Limit']).toBe(4);
+    });
+
+    it('lets @SkipPublicRateLimit() bypass a route-level rule too', async () => {
+      const guard = buildGuard({ maxRequests: 1 });
+      const { context } = buildContext(
+        {},
+        { public: true, skip: true, rule: { max: 1, windowSeconds: 60 } },
+      );
+
+      await expect(guard.canActivate(context)).resolves.toBe(true);
+      await expect(guard.canActivate(context)).resolves.toBe(true);
+    });
+  });
+
+  describe('client identifiers', () => {
+    it('buckets API-key callers separately from their shared IP when enabled', async () => {
+      const guard = buildGuard({ maxRequests: 1, clientIdentifiers: ['apiKey'] });
+      const withKey = (key: string) =>
+        buildContext({ headers: { 'x-api-key': key } }, { public: true }).context;
+
+      // Exhaust the plain-IP bucket first: the (max+1)th keyless hit is limited.
+      await guard.canActivate(buildContext({}, { public: true }).context);
+      await expectRateLimited(guard.canActivate(buildContext({}, { public: true }).context));
+
+      // Key-holding callers get their own budgets despite the same IP.
+      await guard.canActivate(withKey('ak_live_aaaa'));
+      await guard.canActivate(withKey('ak_live_bbbb'));
+    });
+
+    it('ignores API keys when no client identifiers are configured', async () => {
+      const guard = buildGuard({ maxRequests: 1, clientIdentifiers: [] });
+      const withKey = (key: string) =>
+        buildContext({ headers: { 'x-api-key': key } }, { public: true }).context;
+
+      await guard.canActivate(withKey('ak_live_aaaa'));
+
+      // Without identifier tracking, a second key on the same IP is limited.
+      await expectRateLimited(guard.canActivate(withKey('ak_live_bbbb')));
+    });
+
+    it('counts an ApiKey Authorization header the same as x-api-key', async () => {
+      const guard = buildGuard({ maxRequests: 1, clientIdentifiers: ['apiKey'] });
+      const context = buildContext(
+        { headers: { authorization: 'ApiKey ak_live_aaaa' } },
+        { public: true },
+      ).context;
+
+      await guard.canActivate(context);
+
+      await expectRateLimited(
+        guard.canActivate(
+          buildContext({ headers: { 'x-api-key': 'ak_live_aaaa' } }, { public: true }).context,
+        ),
+      );
     });
   });
 
