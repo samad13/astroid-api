@@ -15,6 +15,7 @@ import { sha256 } from '../../../utils/crypto.util';
 import { ConfigService } from '@nestjs/config';
 import { JwtStrategy } from '../jwt.strategy';
 import { TokenBlacklistService } from '../services/token-blacklist.service';
+import { TokenVerificationCacheService } from '../services/token-verification-cache.service';
 
 @Controller('test-resource')
 @UseGuards(JwtAuthGuard, ScopesGuard)
@@ -52,12 +53,16 @@ describe('API Key Authentication with Scoped Permissions (Integration)', () => {
     const mockBlacklist = {
       isAccessTokenRevoked: vi.fn().mockResolvedValue(false),
     };
+    const mockVerificationCache = {
+      resolveSessionRevocation: vi.fn().mockResolvedValue({ revoked: false, verifiedAt: Date.now() }),
+    };
 
     app = await Test.createTestingModule({
       imports: [PassportModule.register({ defaultStrategy: 'jwt' })],
       controllers: [TestProtectedController],
       providers: [
         { provide: ConfigService, useValue: mockConfig },
+        { provide: TokenVerificationCacheService, useValue: mockVerificationCache },
         { provide: TokenBlacklistService, useValue: mockBlacklist },
         JwtStrategy,
         ApiKeyStrategy,

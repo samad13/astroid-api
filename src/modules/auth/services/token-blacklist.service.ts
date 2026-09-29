@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Redis } from 'ioredis';
+import { TokenVerificationCacheService } from './token-verification-cache.service';
 
 /**
  * Redis-backed token revocation store. Issued JWTs remain valid until their
@@ -10,12 +11,19 @@ import { Redis } from 'ioredis';
  *
  * Access and refresh tokens are tracked under separate keys so their (much
  * different) lifetimes can be enforced independently.
+ *
+ * Every revocation also invalidates the session's entry in the token
+ * verification cache ({@link TokenVerificationCacheService}), so a cached
+ * "not revoked" answer can never outlive the revocation itself.
  */
 @Injectable()
 export class TokenBlacklistService {
   private readonly logger = new Logger(TokenBlacklistService.name);
 
-  constructor(private readonly redis: Redis) {}
+  constructor(
+    private readonly redis: Redis,
+    private readonly verificationCache: TokenVerificationCacheService,
+  ) {}
 
   /** Marks every token tied to a session as revoked. */
   async revokeSession(
@@ -31,6 +39,9 @@ export class TokenBlacklistService {
     } catch (error: unknown) {
       // Never let a Redis outage prevent logout from succeeding.
       this.logger.warn(`Failed to blacklist session ${sessionId}: ${(error as Error).message}`);
+      // A failed blacklist write may have left a stale "not revoked" cache
+      // entry behind (or skipped its invalidation); drop it explicitly.
+      await this.verificationCache.invalidateSessionRevocation(sessionId);
     }
   }
 
@@ -39,7 +50,11 @@ export class TokenBlacklistService {
     if (ttlSeconds <= 0) {
       return;
     }
+    // Blacklist first, then drop the cached answer, so a concurrent request
+    // re-verifying against the source of truth can never observe the write
+    // before the invalidation and re-cache a stale "not revoked".
     await this.redis.set(this.accessKey(sessionId), '1', 'EX', ttlSeconds);
+    await this.verificationCache.invalidateSessionRevocation(sessionId);
   }
 
   /** Marks a refresh token as revoked for the remainder of its lifetime. */
@@ -48,6 +63,7 @@ export class TokenBlacklistService {
       return;
     }
     await this.redis.set(this.refreshKey(sessionId), '1', 'EX', ttlSeconds);
+    await this.verificationCache.invalidateSessionRevocation(sessionId);
   }
 
   /** True when the session's access token has been blacklisted. */

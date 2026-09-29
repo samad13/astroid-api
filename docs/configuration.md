@@ -106,6 +106,7 @@ are rejected:
 | `PASSKEY_RP_ID` | `localhost` | WebAuthn relying-party ID. |
 | `PASSKEY_RP_NAME` | `Astroid` | WebAuthn relying-party display name. |
 | `PASSKEY_ORIGIN` | `http://localhost:3001` | Expected WebAuthn origin. |
+| `TOKEN_CACHE_TTL` | `30` | How long a session-revocation answer is cached during token verification, in seconds. Optional and unvalidated (read via `ConfigService` with a default); keep it well below `JWT_ACCESS_TTL` so revocations are re-validated in bounded time. |
 
 ### Stellar
 

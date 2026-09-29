@@ -4,6 +4,7 @@ import { ExtractJwt, Strategy } from 'passport-jwt';
 import { ConfigService } from '@nestjs/config';
 import { AuthConfig } from '../../config/auth.config';
 import { TokenBlacklistService } from './services/token-blacklist.service';
+import { TokenVerificationCacheService } from './services/token-verification-cache.service';
 import {
   AuthenticatedUser,
   JwtAccessPayload,
@@ -16,6 +17,11 @@ import {
  * principal and rejects tokens whose session has been revoked via the
  * Redis-backed blacklist (e.g. after logout). The check fails open if Redis is
  * unreachable so a cache outage does not lock everyone out.
+ *
+ * Revocation checks go through the {@link TokenVerificationCacheService}: the
+ * blacklist answer is cached for a short TTL so authenticated requests avoid
+ * one Redis round trip each, and every revocation path invalidates the cached
+ * entry, so revocations are still observed immediately.
  */
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
@@ -24,6 +30,7 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
   constructor(
     config: ConfigService,
     private readonly tokenBlacklist: TokenBlacklistService,
+    private readonly verificationCache: TokenVerificationCacheService,
   ) {
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
@@ -40,7 +47,13 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
     if (payload.sessionId) {
       let revoked = false;
       try {
-        revoked = await this.tokenBlacklist.isAccessTokenRevoked(payload.sessionId);
+        // Cache-first: reads hit the short-TTL cache; misses fall through to
+        // the Redis blacklist and store the answer for the next requests.
+        const result = await this.verificationCache.resolveSessionRevocation(
+          payload.sessionId,
+          () => this.tokenBlacklist.isAccessTokenRevoked(payload.sessionId as string),
+        );
+        revoked = result.revoked;
       } catch (error: unknown) {
         // Fail open on Redis outages rather than rejecting every request.
         this.logger.warn(

@@ -20,6 +20,7 @@ import { EventBusService } from '../../events/event-bus.service';
 import { DomainEventName } from '../../events/event-names';
 import { LoginInput, RegisterInput } from './auth.dto';
 import { TokenBlacklistService } from './services/token-blacklist.service';
+import { TokenVerificationCacheService } from './services/token-verification-cache.service';
 
 export interface TokenPair {
   accessToken: string;
@@ -63,6 +64,7 @@ export class AuthService {
     private readonly jwt: JwtService,
     private readonly eventBus: EventBusService,
     private readonly tokenBlacklist: TokenBlacklistService,
+    private readonly verificationCache: TokenVerificationCacheService,
     config: ConfigService,
   ) {
     this.auth = config.getOrThrow<AuthConfig>('auth');
@@ -181,6 +183,9 @@ export class AuthService {
       where: { id: session.id },
       data: { revokedAt: new Date() },
     });
+    // In-flight access tokens of the rotated session must re-verify against
+    // the blacklist instead of a cached answer.
+    await this.verificationCache.invalidateOnRefreshRotation(session.id);
 
     return this.issueTokens(session.user, {
       device: session.device ?? undefined,
@@ -203,6 +208,9 @@ export class AuthService {
       this.auth.accessTtl,
       this.auth.refreshTtl,
     );
+    // Belt-and-braces: the blacklist service already invalidates the cached
+    // verification answer; keep logout self-contained even if that changes.
+    await this.verificationCache.invalidateSessionRevocation(sessionId);
     return { success: true };
   }
 
